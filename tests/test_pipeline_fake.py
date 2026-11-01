@@ -53,7 +53,7 @@ class FakeWitness:
 
 
 BASE_FLAGS = dict(STRUCTURE_REFINE=False, METAL_TABLE=False, GLASS_RULES=False, S1_PICK=False, CHECKLIST=False,
-                  DRAFT_HIGH=False, CHAINS=3, PARALLEL_CALLS=3, FINAL_REFINES=2)
+                  DRAFT_HIGH=False, CHAINS=3, PARALLEL_CALLS=3, FINAL_REFINES=2, TOURNAMENT_PICK=False)
 
 
 def _pin(monkeypatch, **flags):
@@ -153,6 +153,38 @@ def test_draft_high_raises_only_the_first_call_of_each_chain(monkeypatch):
         w = EffortWitness()
         pipeline.run(_png(), 1, w, FakeRenderer())
         assert w.efforts[100] == ("high" if flag else "medium") and w.efforts[101] == "high"
+
+
+class TournamentWitness(FakeWitness):
+    """Duel replies that always favour the module shown second (model 2)."""
+
+    def create(self, *, request_id, **kw):
+        if pipeline.TOURNAMENT_IDS <= request_id < pipeline.FINAL_REFINE_ID:
+            self.ids.append(request_id)
+            return types.SimpleNamespace(output_text='{"penalty_1": 6, "penalty_2": 2}', usage={"input_tokens": 1, "output_tokens": 1})
+        return super().create(request_id=request_id, **kw)
+
+
+def test_tournament_with_three_chains_runs_24_duels_and_no_panel(monkeypatch):
+    _pin(monkeypatch, TOURNAMENT_PICK=True, CHAINS=3)
+    w = TournamentWitness()
+    pipeline.run(_png(), 1, w, FakeRenderer())
+    duels = sorted(i for i in w.ids if pipeline.TOURNAMENT_IDS <= i < pipeline.FINAL_REFINE_ID)
+    assert duels == list(range(910, 934))
+    assert not any(pipeline.FINAL_IDS <= i < pipeline.FINAL_IDS + 2 for i in w.ids)
+    assert len(w.ids) == 9 + 24 + 2
+
+
+def test_tournament_with_six_chains_narrows_by_panel_first(monkeypatch):
+    seen = []
+    _spy_first_final(monkeypatch, seen)
+    _pin(monkeypatch, TOURNAMENT_PICK=True, CHAINS=6)
+    w = TournamentWitness()
+    pipeline.run(_png(), 1, w, FakeRenderer())
+    assert sorted(i for i in w.ids if pipeline.FINAL_IDS <= i < pipeline.FINAL_IDS + 2) == [900, 901]
+    assert len([i for i in w.ids if pipeline.TOURNAMENT_IDS <= i < pipeline.FINAL_REFINE_ID]) == 24
+    assert len(w.ids) == 18 + 2 + 24 + 2
+    assert seen and "// " in seen[0]
 
 
 def test_four_final_refines_use_ids_950_to_953(monkeypatch):

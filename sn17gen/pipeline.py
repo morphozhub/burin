@@ -257,6 +257,51 @@ def _s1_pick(witness, renderer, ref: bytes, a: str, b: str) -> tuple[str, float]
     return choice, ledger.credits
 
 
+TOURNAMENT_IDS = 910
+TOURNAMENT_MAX = 3
+TOURNAMENT_EFFORT = "low"
+TOURNAMENT_CALL_CREDITS = 40_000
+
+
+def _tournament_cost(n: int) -> float:
+    return n * (n - 1) * len(s1pick.ANGLES) * TOURNAMENT_CALL_CREDITS
+
+
+def _tournament(witness, renderer, ref: bytes, modules: list[str]) -> tuple[int, float]:
+    """Round-robin of the finalists on the judge's four single front views, both orders, Sol low;
+    penalties are summed per module. Returns (index of the best module, credits)."""
+    shots: dict[int, dict[str, str]] = {}
+    for i, js in enumerate(modules):
+        src = final(js)
+        if src is None:
+            continue
+        try:
+            shots[i] = {label: views.data_url(renderer.render(src, views.view_options(t, p, PICK_PX)))
+                        for t, p, label in s1pick.ANGLES}
+        except Exception as exc:
+            if type(exc).__name__ != "RenderRejected":
+                raise
+    alive = sorted(shots)
+    if len(alive) < 2:
+        return (alive[0] if alive else 0), 0.0
+    photo = views.data_url(ref)
+    asks = [(x, y, label) for a in alive for b in alive if a < b for x, y in ((a, b), (b, a)) for _, _, label in s1pick.ANGLES]
+    ledger = Ledger(credit_cap=_tournament_cost(len(alive)) + 1, call_cap=len(asks))
+
+    def job(k: int, x: int, y: int, label: str):
+        def ask():
+            return s1pick.parse(_call(witness, ledger, TOURNAMENT_IDS + k, "duel", "", [], effort=TOURNAMENT_EFFORT,
+                                      instructions=s1pick.SYSTEM, content=s1pick.content(photo, shots[x][label], shots[y][label], label)))
+        return ask
+
+    replies = _parallel([job(k, x, y, label) for k, (x, y, label) in enumerate(asks)])
+    pen = {i: 0.0 for i in alive}
+    for (x, y, _), (p1, p2) in zip(asks, replies):
+        pen[x] += p1
+        pen[y] += p2
+    return min(alive, key=lambda i: (pen[i], i)), ledger.credits
+
+
 def _final_refine(witness, renderer, ref: bytes, best: str, sheet: bytes, request_id: int, text: str,
                   notes: str | None) -> tuple[str, bytes]:
     """One more refinement of the picked module against the four camera views; kept only if it renders."""
@@ -292,10 +337,17 @@ def run(image: bytes, seed: int, witness, renderer) -> str | None:
     spent += sum(c.ledger.credits for c in chains)
     best_chain = found[0] if found else None
     if len(found) > 1 and spent + 2 * EXPECTED_PANEL_CREDITS <= TOTAL_CREDITS:
-        order, used = _panel(witness, renderer, ref, [c.best for c in found], notes)
-        spent += max(used, 2 * EXPECTED_PANEL_CREDITS)
-        best_chain = found[order[0]]
-        if config.S1_PICK and spent + PICK_CREDITS + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
+        finalists = found
+        if len(found) > TOURNAMENT_MAX or not config.TOURNAMENT_PICK:
+            order, used = _panel(witness, renderer, ref, [c.best for c in found], notes)
+            spent += max(used, 2 * EXPECTED_PANEL_CREDITS)
+            best_chain = found[order[0]]
+            finalists = [found[i] for i in order[:TOURNAMENT_MAX]]
+        if config.TOURNAMENT_PICK and spent + _tournament_cost(len(finalists)) + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
+            idx, used = _tournament(witness, renderer, ref, [c.best for c in finalists])
+            spent += used
+            best_chain = finalists[idx]
+        elif config.S1_PICK and spent + PICK_CREDITS + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
             runner_up = found[order[1]]
             choice, used = _s1_pick(witness, renderer, ref, best_chain.best, runner_up.best)
             spent += used
