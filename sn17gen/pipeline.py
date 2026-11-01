@@ -45,7 +45,7 @@ PICK_PX = 1024
 PICK_CALL_CREDITS = 80_000
 PICK_CREDITS = 8 * PICK_CALL_CREDITS
 FINAL_REFINES = 2
-FINAL_REFINE_CREDITS = 600_000
+FINAL_REFINE_CREDITS = 250_000  # reserve per final refinement; measured 122k mean / 187k max on the 15-prompt stand
 TOTAL_CREDITS = 4_600_000  # the frozen budget is 5,000,000 credits and 60 calls per prompt
 _CHARGE_LOCK = threading.Lock()
 
