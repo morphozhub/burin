@@ -126,5 +126,30 @@ def test_structure_refine_uses_the_structure_text_once(monkeypatch):
     assert seen == ["STRUCTURE", "plain"]
 
 
+def test_six_chains_use_six_id_blocks_below_the_panel(monkeypatch):
+    _, w, _ = _run(monkeypatch, CHAINS=6, S1_PICK=False, CHECKLIST=False, PARALLEL_CALLS=3)
+    chain = sorted(i for i in w.ids if i < pipeline.FINAL_IDS)
+    assert chain == [b + k for b in (100, 200, 300, 400, 500, 600) for k in (0, 1, 2)]
+    assert len(w.ids) == 18 + 4
+
+
+class EffortWitness(FakeWitness):
+    def create(self, *, request_id, reasoning, **kw):
+        self.efforts = getattr(self, "efforts", {})
+        self.efforts[request_id] = reasoning["effort"] if isinstance(reasoning, dict) else getattr(reasoning, "effort", reasoning)
+        return super().create(request_id=request_id, reasoning=reasoning, **kw)
+
+
+def test_draft_high_raises_only_the_first_call_of_each_chain(monkeypatch):
+    for flag in (False, True):
+        monkeypatch.setattr(config, "DRAFT_HIGH", flag)
+        monkeypatch.setattr(config, "CHAINS", 3)
+        monkeypatch.setattr(config, "S1_PICK", False)
+        monkeypatch.setattr(config, "CHECKLIST", False)
+        w = EffortWitness()
+        pipeline.run(_png(), 1, w, FakeRenderer())
+        assert w.efforts[100] == ("high" if flag else "medium") and w.efforts[101] == "high"
+
+
 def test_flags_off_keep_the_base_system_prompt():
     assert "Metal shades" not in __import__("sn17gen.prompts", fromlist=["x"]).GEN_SYSTEM or config.METAL_TABLE

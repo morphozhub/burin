@@ -113,7 +113,7 @@ def _parallel(jobs: list[Callable[[], object]]) -> list:
     """One stage of model calls: all start together, the stage ends when all have returned."""
     if not jobs:
         return []
-    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, min(len(jobs), config.PARALLEL_CALLS))) as pool:
         futures = [pool.submit(job) for job in jobs]
         return [f.result() for f in futures]
 
@@ -162,7 +162,7 @@ class _Chain:
             text = STARTS[self.idx % len(STARTS)] if self.ledger.calls == 0 else prompts.GEN_USER
             if self.notes:
                 text = prompts.PLAN_NOTES % self.notes + text
-            effort = EFFORT if self.ledger.calls == 0 else REFINE_EFFORT
+            effort = (REFINE_EFFORT if config.DRAFT_HIGH else EFFORT) if self.ledger.calls == 0 else REFINE_EFFORT
         elif self.err is not None:
             kind, text, pngs, effort = "repair", prompts.REPAIR_USER % (self.err, self.js), [ref], REFINE_EFFORT
         else:
@@ -277,7 +277,7 @@ def run(image: bytes, seed: int, witness, renderer) -> str | None:
     notes, spent = None, 0.0
     if config.CHECKLIST:
         notes, spent = _plan(witness, ref)
-    chains = [_Chain(i, notes) for i in range(CHAINS)]
+    chains = [_Chain(i, notes) for i in range(min(config.CHAINS, (FINAL_IDS // ID_BLOCK) - 1))]
     while True:
         planned = [(c, c.next_job(witness, ref)) for c in chains if not c.done]
         planned = [(c, job) for c, job in planned if job is not None]

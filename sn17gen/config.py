@@ -20,3 +20,15 @@ S1_PICK = False
 # counts and colours, text) and a short checklist of what a judge would verify; attached to every
 # generation, refinement and the panel.
 CHECKLIST = False
+
+# Reasoning effort "high" on the first (draft) call of every chain instead of "medium": the draft
+# fixes the skeleton (part counts, proportions); refinements rarely restructure it.
+DRAFT_HIGH = False
+
+# Number of independent generation chains ranked by the panel (base 3). More chains = more
+# candidates for the judge-style selection; ids stay below the panel block for up to 8 chains.
+CHAINS = 3
+
+# Model calls started at once inside one prompt (chains run in lockstep); keep at the witness
+# capture-slot count so battle runs never queue captures behind their own deadline.
+PARALLEL_CALLS = 3
