@@ -35,7 +35,7 @@ PARALLEL_CALLS = 3
 
 # Number of final refinements of the picked module on the judge's four-camera sheet (base 2).
 # Rabbit's round-1 chain winner ran 3 and beat its own sibling with 2 by +0.117; ids 950 + k.
-FINAL_REFINES = 3
+FINAL_REFINES = 5
 
 # Round-1 chain winner's selection: instead of the Astra panel, every pair of finalists duels on the
 # judge's four single front views in both orders (Sol low, 8 calls per pair, penalties summed); with more
