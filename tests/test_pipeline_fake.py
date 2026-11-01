@@ -53,7 +53,7 @@ class FakeWitness:
 
 
 BASE_FLAGS = dict(STRUCTURE_REFINE=False, METAL_TABLE=False, GLASS_RULES=False, S1_PICK=False, CHECKLIST=False,
-                  DRAFT_HIGH=False, CHAINS=3, PARALLEL_CALLS=3)
+                  DRAFT_HIGH=False, CHAINS=3, PARALLEL_CALLS=3, FINAL_REFINES=2)
 
 
 def _pin(monkeypatch, **flags):
@@ -153,6 +153,12 @@ def test_draft_high_raises_only_the_first_call_of_each_chain(monkeypatch):
         w = EffortWitness()
         pipeline.run(_png(), 1, w, FakeRenderer())
         assert w.efforts[100] == ("high" if flag else "medium") and w.efforts[101] == "high"
+
+
+def test_four_final_refines_use_ids_950_to_953(monkeypatch):
+    _, w, _ = _run(monkeypatch, FINAL_REFINES=4)
+    assert sorted(i for i in w.ids if pipeline.FINAL_REFINE_ID <= i < pipeline.PICK_IDS) == [950, 951, 952, 953]
+    assert len(w.ids) == 9 + 2 + 4
 
 
 def test_metal_table_text_follows_the_flag():

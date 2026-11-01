@@ -32,3 +32,7 @@ CHAINS = 3
 # Model calls started at once inside one prompt (chains run in lockstep); keep at the witness
 # capture-slot count so battle runs never queue captures behind their own deadline.
 PARALLEL_CALLS = 3
+
+# Number of final refinements of the picked module on the judge's four-camera sheet (base 2).
+# Rabbit's round-1 chain winner ran 3 and beat its own sibling with 2 by +0.117; ids 950 + k.
+FINAL_REFINES = 2

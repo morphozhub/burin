@@ -304,7 +304,7 @@ def run(image: bytes, seed: int, witness, renderer) -> str | None:
     best = None
     if best_chain is not None:
         best, sheet = best_chain.best, best_chain.best_sheet
-        for k in range(FINAL_REFINES):
+        for k in range(min(config.FINAL_REFINES, PICK_IDS - FINAL_REFINE_ID)):
             if spent + (k + 1) * FINAL_REFINE_CREDITS > TOTAL_CREDITS:
                 break
             text = prompts.FINAL_REFINE_USER if (config.STRUCTURE_REFINE and k == 0) else prompts.REFINE_USER
