@@ -263,13 +263,20 @@ TOURNAMENT_EFFORT = "low"
 TOURNAMENT_CALL_CREDITS = 40_000
 
 
+GUARD_IDS = 860
+
+
+def _tournament_call_credits() -> float:
+    return 2 * TOURNAMENT_CALL_CREDITS if config.TOURNAMENT_MODEL == "gpt-6-astra" else TOURNAMENT_CALL_CREDITS
+
+
 def _tournament_cost(n: int) -> float:
-    return n * (n - 1) * len(s1pick.ANGLES) * TOURNAMENT_CALL_CREDITS
+    return n * (n - 1) * len(s1pick.ANGLES) * _tournament_call_credits()
 
 
-def _tournament(witness, renderer, ref: bytes, modules: list[str]) -> tuple[int, float]:
-    """Round-robin of the finalists on the judge's four single front views, both orders, Sol low;
-    penalties are summed per module. Returns (index of the best module, credits)."""
+def _tournament(witness, renderer, ref: bytes, modules: list[str], ids: int = TOURNAMENT_IDS) -> tuple[int, float, dict]:
+    """Round-robin of the finalists on the judge's four single front views, both orders, low effort;
+    penalties are summed per module. Returns (index of the best module, credits, penalties by index)."""
     shots: dict[int, dict[str, str]] = {}
     for i, js in enumerate(modules):
         src = final(js)
@@ -283,15 +290,16 @@ def _tournament(witness, renderer, ref: bytes, modules: list[str]) -> tuple[int,
                 raise
     alive = sorted(shots)
     if len(alive) < 2:
-        return (alive[0] if alive else 0), 0.0
+        return (alive[0] if alive else 0), 0.0, {}
     photo = views.data_url(ref)
     asks = [(x, y, label) for a in alive for b in alive if a < b for x, y in ((a, b), (b, a)) for _, _, label in s1pick.ANGLES]
     ledger = Ledger(credit_cap=_tournament_cost(len(alive)) + 1, call_cap=len(asks))
 
     def job(k: int, x: int, y: int, label: str):
         def ask():
-            return s1pick.parse(_call(witness, ledger, TOURNAMENT_IDS + k, "duel", "", [], effort=TOURNAMENT_EFFORT,
-                                      instructions=s1pick.SYSTEM, content=s1pick.content(photo, shots[x][label], shots[y][label], label)))
+            return s1pick.parse(_call(witness, ledger, ids + k, "duel", "", [], model=config.TOURNAMENT_MODEL,
+                                      effort=TOURNAMENT_EFFORT, instructions=s1pick.SYSTEM,
+                                      content=s1pick.content(photo, shots[x][label], shots[y][label], label)))
         return ask
 
     replies = _parallel([job(k, x, y, label) for k, (x, y, label) in enumerate(asks)])
@@ -299,7 +307,7 @@ def _tournament(witness, renderer, ref: bytes, modules: list[str]) -> tuple[int,
     for (x, y, _), (p1, p2) in zip(asks, replies):
         pen[x] += p1
         pen[y] += p2
-    return min(alive, key=lambda i: (pen[i], i)), ledger.credits
+    return min(alive, key=lambda i: (pen[i], i)), ledger.credits, pen
 
 
 def _final_refine(witness, renderer, ref: bytes, best: str, sheet: bytes, request_id: int, text: str,
@@ -344,7 +352,7 @@ def run(image: bytes, seed: int, witness, renderer) -> str | None:
             best_chain = found[order[0]]
             finalists = [found[i] for i in order[:TOURNAMENT_MAX]]
         if config.TOURNAMENT_PICK and spent + _tournament_cost(len(finalists)) + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
-            idx, used = _tournament(witness, renderer, ref, [c.best for c in finalists])
+            idx, used, _pen = _tournament(witness, renderer, ref, [c.best for c in finalists])
             spent += used
             best_chain = finalists[idx]
         elif config.S1_PICK and spent + PICK_CREDITS + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
@@ -360,7 +368,13 @@ def run(image: bytes, seed: int, witness, renderer) -> str | None:
             if spent + (k + 1) * FINAL_REFINE_CREDITS > TOTAL_CREDITS:
                 break
             text = prompts.FINAL_REFINE_USER if (config.STRUCTURE_REFINE and k == 0) else prompts.REFINE_USER
+            before, before_sheet = best, sheet
             best, sheet = _final_refine(witness, renderer, ref, best, sheet, FINAL_REFINE_ID + k, text, notes)
+            if config.GUARDED_REFINES and best is not before and spent + _tournament_cost(2) + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
+                _idx, used, pen = _tournament(witness, renderer, ref, [before, best], ids=GUARD_IDS + 8 * k)
+                spent += used
+                if pen and pen.get(0, 0.0) < pen.get(1, 0.0):  # the refinement lost its duel: keep the module before it
+                    best, sheet = before, before_sheet
     out = final(best) if best is not None else None
     if out is None:
         raise RuntimeError("no valid module")  # never submit an empty result; the runner retries the prompt

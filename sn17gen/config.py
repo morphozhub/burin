@@ -41,3 +41,11 @@ FINAL_REFINES = 2
 # judge's four single front views in both orders (Sol low, 8 calls per pair, penalties summed); with more
 # than three finalists the panel first narrows them to three (24 duel calls, ids 910-933).
 TOURNAMENT_PICK = False
+
+# Model that judges the tournament duels: None = the generation model (Sol, the chain winner's choice),
+# "gpt-6-astra" = the stronger vision model (our picker calibration: 40/40 on clear pairs).
+TOURNAMENT_MODEL = None
+
+# After every final refinement, duel the module before and after it on the judge's four views in both
+# orders (8 calls, ids 860 + 8k) and keep the better one, so a refinement can never make the result worse.
+GUARDED_REFINES = False

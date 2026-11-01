@@ -53,7 +53,8 @@ class FakeWitness:
 
 
 BASE_FLAGS = dict(STRUCTURE_REFINE=False, METAL_TABLE=False, GLASS_RULES=False, S1_PICK=False, CHECKLIST=False,
-                  DRAFT_HIGH=False, CHAINS=3, PARALLEL_CALLS=3, FINAL_REFINES=2, TOURNAMENT_PICK=False)
+                  DRAFT_HIGH=False, CHAINS=3, PARALLEL_CALLS=3, FINAL_REFINES=2, TOURNAMENT_PICK=False,
+                  TOURNAMENT_MODEL=None, GUARDED_REFINES=False)
 
 
 def _pin(monkeypatch, **flags):
@@ -185,6 +186,47 @@ def test_tournament_with_six_chains_narrows_by_panel_first(monkeypatch):
     assert len([i for i in w.ids if pipeline.TOURNAMENT_IDS <= i < pipeline.FINAL_REFINE_ID]) == 24
     assert len(w.ids) == 18 + 2 + 24 + 2
     assert seen and "// " in seen[0]
+
+
+class ModelWitness(TournamentWitness):
+    def create(self, *, request_id, model, **kw):
+        self.models = getattr(self, "models", {})
+        self.models[request_id] = model
+        return super().create(request_id=request_id, model=model, **kw)
+
+
+def test_tournament_model_switches_to_astra(monkeypatch):
+    _pin(monkeypatch, TOURNAMENT_PICK=True, TOURNAMENT_MODEL="gpt-6-astra")
+    w = ModelWitness()
+    pipeline.run(_png(), 1, w, FakeRenderer())
+    assert w.models[910] == "gpt-6-astra" and w.models[100] == pipeline.MODEL
+
+
+class GuardWitness(FakeWitness):
+    """Guard duels favour whichever side `winner` names (1 = before the refinement, 2 = after)."""
+
+    def __init__(self, winner: int):
+        super().__init__()
+        self.winner = winner
+
+    def create(self, *, request_id, **kw):
+        if pipeline.GUARD_IDS <= request_id < pipeline.FINAL_IDS:
+            self.ids.append(request_id)
+            before_is_first = (request_id - pipeline.GUARD_IDS) % 8 < 4  # asks: 4 views of (before, after), then 4 of (after, before)
+            before_wins = self.winner == 1
+            p1, p2 = (2, 6) if before_is_first == before_wins else (6, 2)
+            return types.SimpleNamespace(output_text=f'{{"penalty_1": {p1}, "penalty_2": {p2}}}', usage={"input_tokens": 1, "output_tokens": 1})
+        return super().create(request_id=request_id, **kw)
+
+
+def test_guarded_refines_keep_the_module_before_a_losing_refinement(monkeypatch):
+    outs = {}
+    for winner in (1, 2):
+        _pin(monkeypatch, GUARDED_REFINES=True, FINAL_REFINES=1)
+        w = GuardWitness(winner)
+        outs[winner] = pipeline.run(_png(), 1, w, FakeRenderer())
+        assert sorted(i for i in w.ids if pipeline.GUARD_IDS <= i < pipeline.FINAL_IDS) == list(range(860, 868))
+    assert "// 950" not in outs[1] and "// 950" in outs[2]
 
 
 def test_four_final_refines_use_ids_950_to_953(monkeypatch):
