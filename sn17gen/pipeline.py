@@ -264,6 +264,7 @@ TOURNAMENT_CALL_CREDITS = 40_000
 
 
 GUARD_IDS = 860
+CRITIC_IDS = 840          # 4 ids per final refinement (840 + 4k): one critic call per judge view, below the guard block
 
 
 def _tournament_call_credits() -> float:
@@ -308,6 +309,33 @@ def _tournament(witness, renderer, ref: bytes, modules: list[str], ids: int = TO
         pen[x] += p1
         pen[y] += p2
     return min(alive, key=lambda i: (pen[i], i)), ledger.credits, pen
+
+
+def _critique(witness, renderer, ref: bytes, js: str, ids: int) -> tuple[str | None, float]:
+    """Judge-style critic on the four single front views of the final module: one low-effort call per view,
+    the tournament's model; returns the issues as notes (one line per view) and the credits used."""
+    src = final(js)
+    if src is None:
+        return None, 0.0
+    try:
+        shots = {label: views.data_url(renderer.render(src, views.view_options(t, p, PICK_PX))) for t, p, label in s1pick.ANGLES}
+    except Exception as exc:
+        if type(exc).__name__ != "RenderRejected":
+            raise
+        return None, 0.0
+    photo = views.data_url(ref)
+    ledger = Ledger(credit_cap=len(shots) * _tournament_call_credits() + 1, call_cap=len(shots))
+
+    def job(k: int, label: str):
+        def ask():
+            return s1pick.parse_issues(_call(witness, ledger, ids + k, "critic", "", [], model=config.TOURNAMENT_MODEL,
+                                            effort=TOURNAMENT_EFFORT, instructions=s1pick.SYSTEM,
+                                            content=s1pick.critic_content(photo, shots[label], label)))
+        return ask
+
+    replies = _parallel([job(k, label) for k, (_, _, label) in enumerate(s1pick.ANGLES)])
+    lines = [f"- seen from {s1pick.ANGLE_DESC[label]}: {issues}" for (_, _, label), issues in zip(s1pick.ANGLES, replies) if issues]
+    return ("\n".join(lines) if lines else None), ledger.credits
 
 
 def _final_refine(witness, renderer, ref: bytes, best: str, sheet: bytes, request_id: int, text: str,
@@ -368,6 +396,11 @@ def run(image: bytes, seed: int, witness, renderer) -> str | None:
             if spent + (k + 1) * FINAL_REFINE_CREDITS > TOTAL_CREDITS:
                 break
             text = prompts.FINAL_REFINE_USER if (config.STRUCTURE_REFINE and k == 0) else prompts.REFINE_USER
+            if config.JUDGE_NOTES and spent + 4 * _tournament_call_credits() + (k + 1) * FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
+                judge_notes, used = _critique(witness, renderer, ref, best, CRITIC_IDS + 4 * k)
+                spent += used
+                if judge_notes:
+                    text += prompts.JUDGE_REFINE % judge_notes.replace("%", "%%")  # the module is substituted later
             before, before_sheet = best, sheet
             best, sheet = _final_refine(witness, renderer, ref, best, sheet, FINAL_REFINE_ID + k, text, notes)
             if config.GUARDED_REFINES and best is not before and spent + _tournament_cost(2) + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:

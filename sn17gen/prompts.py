@@ -109,3 +109,9 @@ CHECK_PANEL = """Features a faithful model should match (from a first look at th
 %s
 
 """
+
+JUDGE_REFINE = """
+
+A judge compared single renders of the current module with the photo (the photo wins where they disagree) and noted:
+%s
+Fix these first."""

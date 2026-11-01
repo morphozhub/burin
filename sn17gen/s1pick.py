@@ -25,6 +25,16 @@ USER = ("You see two 3D models rendered from {angle_desc}.\n"
         "7 = Major issues (wrong category but related, e.g. chair vs stool)\n"
         "10 = Completely wrong object\n\n"
         'Output: {{"penalty_1": <0-10>, "penalty_2": <0-10>, "issues": "<brief>"}}')
+CRITIC_USER = ("You see one 3D model rendered from {angle_desc}.\n"
+               "The reference image shows the target object.\n\n"
+               "How faithful a 3D reproduction of the reference is the model?\n\n"
+               "Penalty 0-10:\n"
+               "0 = Perfect match to reference\n"
+               "3 = Minor issues (slight shape differences, missing small details)\n"
+               "5 = Moderate issues (wrong style, significant details missing)\n"
+               "7 = Major issues (wrong category but related, e.g. chair vs stool)\n"
+               "10 = Completely wrong object\n\n"
+               'Output: {{"penalty": <0-10>, "issues": "<the visible differences from the reference, most important first>"}}')
 DRAW_BAND = 0.7
 NEUTRAL = (5.0, 5.0)
 
@@ -37,6 +47,27 @@ def content(photo_url: str, first_url: str, second_url: str, label: str) -> list
             {"type": "input_text", "text": "3D model 2:"},
             {"type": "input_image", "image_url": second_url, "detail": "high"},
             {"type": "input_text", "text": USER.format(angle_desc=ANGLE_DESC[label])}]
+
+
+def critic_content(photo_url: str, model_url: str, label: str) -> list[dict]:
+    return [{"type": "input_text", "text": "Reference image (target object):"},
+            {"type": "input_image", "image_url": photo_url, "detail": "high"},
+            {"type": "input_text", "text": "3D model:"},
+            {"type": "input_image", "image_url": model_url, "detail": "high"},
+            {"type": "input_text", "text": CRITIC_USER.format(angle_desc=ANGLE_DESC[label])}]
+
+
+def parse_issues(text: str | None) -> str | None:
+    """The critic's issues text, or None when the reply is unreadable or names no issue."""
+    m = re.search(r"\{.*\}", text or "", re.S)
+    if not m:
+        return None
+    try:
+        issues = json.loads(m.group(0)).get("issues")
+    except (ValueError, AttributeError):
+        return None
+    issues = str(issues or "").strip()
+    return issues[:600] or None
 
 
 def parse(text: str | None) -> tuple[float, float]:

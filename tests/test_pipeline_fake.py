@@ -54,7 +54,7 @@ class FakeWitness:
 
 BASE_FLAGS = dict(STRUCTURE_REFINE=False, METAL_TABLE=False, GLASS_RULES=False, S1_PICK=False, CHECKLIST=False,
                   DRAFT_HIGH=False, CHAINS=3, PARALLEL_CALLS=3, FINAL_REFINES=2, TOURNAMENT_PICK=False,
-                  TOURNAMENT_MODEL=None, GUARDED_REFINES=False)
+                  TOURNAMENT_MODEL=None, GUARDED_REFINES=False, JUDGE_NOTES=False)
 
 
 def _pin(monkeypatch, **flags):
@@ -237,3 +237,27 @@ def test_four_final_refines_use_ids_950_to_953(monkeypatch):
 
 def test_metal_table_text_follows_the_flag():
     assert ("Metal shades" in __import__("sn17gen.prompts", fromlist=["x"]).GEN_SYSTEM) == config.METAL_TABLE
+
+
+class CriticWitness(FakeWitness):
+    """Critic replies name an issue (with a percent sign, which the later module substitution must survive)."""
+
+    def create(self, *, request_id, input, **kw):
+        if pipeline.CRITIC_IDS <= request_id < pipeline.GUARD_IDS:
+            self.ids.append(request_id)
+            return types.SimpleNamespace(output_text='{"penalty": 4, "issues": "handle 30% too short"}', usage={"input_tokens": 1, "output_tokens": 1})
+        if pipeline.FINAL_REFINE_ID <= request_id < pipeline.PICK_IDS:
+            self.final_texts = getattr(self, "final_texts", []) + [input[0]["content"][0]["text"]]
+        return super().create(request_id=request_id, input=input, **kw)
+
+
+def test_judge_notes_add_four_critic_calls_before_every_final_refinement(monkeypatch):
+    _pin(monkeypatch, JUDGE_NOTES=True, FINAL_REFINES=2)
+    w = CriticWitness()
+    pipeline.run(_png(), 1, w, FakeRenderer())
+    assert sorted(i for i in w.ids if pipeline.CRITIC_IDS <= i < pipeline.GUARD_IDS) == list(range(840, 848))
+    assert len(w.ids) == 9 + 2 + 8 + 2
+    assert len(w.final_texts) == 2
+    for text in w.final_texts:
+        assert "A judge compared single renders" in text and "handle 30% too short" in text
+        assert "seen from slightly left of the front" in text and "export default function generate" in text

@@ -49,3 +49,8 @@ TOURNAMENT_MODEL = None
 # After every final refinement, duel the module before and after it on the judge's four views in both
 # orders (8 calls, ids 860 + 8k) and keep the better one, so a refinement can never make the result worse.
 GUARDED_REFINES = False
+
+# Before every final refinement, a judge-style critic (the tournament's model and effort) rates the current
+# module on each of the judge's four single front views and names the visible differences from the photo;
+# its notes are appended to the refinement request (4 calls per refinement, ids 840 + 4k).
+JUDGE_NOTES = False
