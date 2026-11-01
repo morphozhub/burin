@@ -52,9 +52,17 @@ class FakeWitness:
         return types.SimpleNamespace(output_text=text, usage={"input_tokens": 1000, "output_tokens": 500})
 
 
-def _run(monkeypatch, **flags):
-    for k, v in flags.items():
+BASE_FLAGS = dict(STRUCTURE_REFINE=False, METAL_TABLE=False, GLASS_RULES=False, S1_PICK=False, CHECKLIST=False,
+                  DRAFT_HIGH=False, CHAINS=3, PARALLEL_CALLS=3)
+
+
+def _pin(monkeypatch, **flags):
+    for k, v in {**BASE_FLAGS, **flags}.items():
         monkeypatch.setattr(config, k, v)
+
+
+def _run(monkeypatch, **flags):
+    _pin(monkeypatch, **flags)
     w, r = FakeWitness(), FakeRenderer()
     out = pipeline.run(_png(), 1, w, r)
     return out, w, r
@@ -103,8 +111,7 @@ def test_s1_pick_runs_eight_duel_calls_and_draw_keeps_the_panel_pick(monkeypatch
 def test_s1_pick_one_sided_duel_flips_to_the_runner_up(monkeypatch):
     seen = []
     _spy_first_final(monkeypatch, seen)
-    for k, v in dict(S1_PICK=True, CHECKLIST=False, STRUCTURE_REFINE=False).items():
-        monkeypatch.setattr(config, k, v)
+    _pin(monkeypatch, S1_PICK=True)
     pipeline.run(_png(), 1, SidedWitness(), FakeRenderer())
     assert "// 102" in seen[0]
 
@@ -142,14 +149,11 @@ class EffortWitness(FakeWitness):
 
 def test_draft_high_raises_only_the_first_call_of_each_chain(monkeypatch):
     for flag in (False, True):
-        monkeypatch.setattr(config, "DRAFT_HIGH", flag)
-        monkeypatch.setattr(config, "CHAINS", 3)
-        monkeypatch.setattr(config, "S1_PICK", False)
-        monkeypatch.setattr(config, "CHECKLIST", False)
+        _pin(monkeypatch, DRAFT_HIGH=flag)
         w = EffortWitness()
         pipeline.run(_png(), 1, w, FakeRenderer())
         assert w.efforts[100] == ("high" if flag else "medium") and w.efforts[101] == "high"
 
 
-def test_flags_off_keep_the_base_system_prompt():
-    assert "Metal shades" not in __import__("sn17gen.prompts", fromlist=["x"]).GEN_SYSTEM or config.METAL_TABLE
+def test_metal_table_text_follows_the_flag():
+    assert ("Metal shades" in __import__("sn17gen.prompts", fromlist=["x"]).GEN_SYSTEM) == config.METAL_TABLE
