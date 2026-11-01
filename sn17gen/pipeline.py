@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import os
 import re
 import threading
 import time
@@ -12,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PIL import Image
 
-from . import prompts, views
+from . import config, prompts, s1pick, views
 from .budget import Ledger
 from .jsutil import extract, final, wrap
 
@@ -33,25 +32,22 @@ EXPECTED_PANEL_CREDITS = 150_000
 CHAIN_CREDITS = 1_350_000
 CHAIN_CALLS = CALLS + REPAIRS + PROVIDER_RETRIES
 ID_BLOCK = 100
+PLAN_ID = 50
+PLAN_MODEL = "gpt-6.1-sol"
+PLAN_EFFORT = "medium"
+PLAN_CREDITS = 120_000
 FINAL_IDS = 900
 FINAL_REFINE_ID = 950
+PICK_IDS = 970            # 8 ids: angle * 2 + order
+PICK_MODEL = "gpt-6-astra"
+PICK_EFFORT = "low"
+PICK_PX = 1024
+PICK_CALL_CREDITS = 80_000
+PICK_CREDITS = 8 * PICK_CALL_CREDITS
 FINAL_REFINES = 2
 FINAL_REFINE_CREDITS = 600_000
 TOTAL_CREDITS = 4_600_000  # the frozen budget is 5,000,000 credits and 60 calls per prompt
 _CHARGE_LOCK = threading.Lock()
-_TRACE_LOCK = threading.Lock()
-
-
-def _trace(key: str, stage: str, source: str | None) -> None:
-    """Development only: with SN17_TRACE_DIR set, append each stage's module for offline stage evaluation."""
-    folder = os.environ.get("SN17_TRACE_DIR")
-    if not folder or source is None:
-        return
-    path = os.path.join(folder, key)
-    with _TRACE_LOCK:
-        os.makedirs(path, exist_ok=True)
-        with open(os.path.join(path, "stages.jsonl"), "a", encoding="utf-8") as f:
-            f.write(json.dumps({"stage": stage, "source": source}) + "\n")
 
 
 def _png(image: bytes) -> bytes:
@@ -62,11 +58,12 @@ def _png(image: bytes) -> bytes:
 
 
 def _call(witness, ledger: Ledger, rid: int, kind: str, text: str, pngs: list[bytes], *, model: str | None = None,
-          effort: str | None = None, instructions: str | None = None) -> str | None:
+          effort: str | None = None, instructions: str | None = None, content: list[dict] | None = None) -> str | None:
     model, effort = model or MODEL, effort or EFFORT
     instructions = prompts.GEN_SYSTEM if instructions is None else instructions
-    content = [{"type": "input_text", "text": text}]
-    content += [{"type": "input_image", "image_url": views.data_url(p), "detail": "high"} for p in pngs]
+    if content is None:
+        content = [{"type": "input_text", "text": text}]
+        content += [{"type": "input_image", "image_url": views.data_url(p), "detail": "high"} for p in pngs]
     try:
         result = witness.responses.create(
             request_id=rid, model=model, instructions=instructions,
@@ -112,7 +109,7 @@ def _sheet_or_error(renderer, source: str) -> tuple[bytes | None, str | None]:
         return None, _rejection(exc)
 
 
-def _parallel(jobs: list[Callable[[], str | None]]) -> list[str | None]:
+def _parallel(jobs: list[Callable[[], object]]) -> list:
     """One stage of model calls: all start together, the stage ends when all have returned."""
     if not jobs:
         return []
@@ -124,8 +121,8 @@ def _parallel(jobs: list[Callable[[], str | None]]) -> list[str | None]:
 class _Chain:
     """One chain (generate, then refine the latest valid module twice; repair rejections), one step per stage."""
 
-    def __init__(self, idx: int, key: str) -> None:
-        self.idx, self.key, self.base = idx, key, (idx + 1) * ID_BLOCK
+    def __init__(self, idx: int, notes: str | None) -> None:
+        self.idx, self.base, self.notes = idx, (idx + 1) * ID_BLOCK, notes
         self.ledger = Ledger(credit_cap=CHAIN_CREDITS, call_cap=CHAIN_CALLS)
         self.stop, self.spare, self.retries, self.seen = CALLS, REPAIRS, PROVIDER_RETRIES, 0
         self.best: str | None = None
@@ -135,7 +132,7 @@ class _Chain:
         self.step = 0
         self.done = False
 
-    def settle(self, renderer, kind: str) -> None:
+    def settle(self, renderer) -> None:
         """Validate the module the last call returned (renders run in the main thread, chain by chain)."""
         self.err = None
         if self.js is None:
@@ -147,9 +144,8 @@ class _Chain:
         sheet, self.err = _sheet_or_error(renderer, wrapped)
         if self.err is None:
             self.best, self.best_sheet = self.js, sheet
-            _trace(self.key, f"c{self.idx}.{self.step}.{kind}", wrapped)
 
-    def next_job(self, witness, ref: bytes) -> tuple[Callable, str] | None:
+    def next_job(self, witness, ref: bytes) -> Callable | None:
         while self.ledger.provider_errors > self.seen:
             self.seen += 1
             if self.retries > 0:
@@ -164,16 +160,29 @@ class _Chain:
         if self.js is None and self.best is None:
             kind, pngs = "gen", [ref]
             text = STARTS[self.idx % len(STARTS)] if self.ledger.calls == 0 else prompts.GEN_USER
+            if self.notes:
+                text = prompts.PLAN_NOTES % self.notes + text
             effort = EFFORT if self.ledger.calls == 0 else REFINE_EFFORT
         elif self.err is not None:
             kind, text, pngs, effort = "repair", prompts.REPAIR_USER % (self.err, self.js), [ref], REFINE_EFFORT
         else:
             kind, text, pngs, effort = "refine", prompts.REFINE_USER % self.best, [ref, self.best_sheet], REFINE_EFFORT
+            if self.notes:
+                text += prompts.CHECK_REFINE % self.notes
         rid = self.base + self.ledger.calls
 
         def job():
             return extract(_call(witness, self.ledger, rid, kind, text, pngs, effort=effort))
-        return job, kind
+        return job
+
+
+def _plan(witness, ref: bytes) -> tuple[str | None, float]:
+    """One text call on the photo: notes and a judge checklist, reused by every later call."""
+    ledger = Ledger(credit_cap=2 * PLAN_CREDITS, call_cap=1)
+    text = _call(witness, ledger, PLAN_ID, "plan", prompts.PLAN_USER, [ref],
+                 model=PLAN_MODEL, effort=PLAN_EFFORT, instructions=prompts.PLAN_SYSTEM)
+    notes = (text or "").strip()[:2000]
+    return (notes or None), ledger.credits
 
 
 def _penalties(text: str | None, n: int) -> list[float] | None:
@@ -185,20 +194,24 @@ def _penalties(text: str | None, n: int) -> list[float] | None:
     return pens if len(pens) == n else None
 
 
-def _panel(witness, renderer, ref: bytes, modules: list[str]) -> str:
-    """lumen-kit's panel, asked in both presentation orders at once; penalties are summed."""
+def _panel(witness, renderer, ref: bytes, modules: list[str], notes: str | None) -> tuple[list[int], float]:
+    """lumen-kit's panel, asked in both presentation orders at once; penalties are summed.
+    Returns the candidate indices from best to worst and the credits spent."""
     sheets = [views.front_sheet(renderer.render, wrap(js)) for js in modules]
     n = len(modules)
     ledger = Ledger(credit_cap=2 * EXPECTED_PANEL_CREDITS + 1, call_cap=2)
     orders = (list(range(n)), list(range(n))[::-1])
+    text = prompts.PANEL_USER % (n + 1)
+    if notes:
+        text = prompts.CHECK_PANEL % notes + text
 
     def job(k: int):
         def ask():
             order = orders[k]
-            text = _call(witness, ledger, FINAL_IDS + k, "pick", prompts.PANEL_USER % (n + 1),
-                         [ref, *[sheets[i] for i in order]], model=PANEL_MODEL, effort=PANEL_EFFORT,
-                         instructions=prompts.PICK_SYSTEM)
-            pens = _penalties(text, n)
+            reply = _call(witness, ledger, FINAL_IDS + k, "pick", text,
+                          [ref, *[sheets[i] for i in order]], model=PANEL_MODEL, effort=PANEL_EFFORT,
+                          instructions=prompts.PICK_SYSTEM)
+            pens = _penalties(reply, n)
             if pens is None:
                 return None
             out = [0.0] * n
@@ -209,16 +222,49 @@ def _panel(witness, renderer, ref: bytes, modules: list[str]) -> str:
 
     votes = [v for v in _parallel([job(0), job(1)]) if v is not None]
     if not votes:
-        return modules[0]
+        return list(range(n)), ledger.credits
     total = [sum(col) for col in zip(*votes)]
-    return modules[min(range(n), key=lambda i: (total[i], i))]
+    return sorted(range(n), key=lambda i: (total[i], i)), ledger.credits
 
 
-def _final_refine(witness, renderer, ref: bytes, best: str, sheet: bytes, request_id: int) -> tuple[str, bytes]:
+def _s1_pick(witness, renderer, ref: bytes, a: str, b: str) -> tuple[str, float]:
+    """Duel two modules as the judge's Stage 1 does: four single front views of the final (tilted) module,
+    both presentation orders, the judge's own wording. Returns ("A" | "B" | "draw", credits)."""
+    fa, fb = final(a), final(b)
+    if fa is None or fb is None:
+        return "draw", 0.0
+    photo = views.data_url(ref)
+    urls = {}
+    for theta, phi, label in s1pick.ANGLES:
+        for side, src in (("a", fa), ("b", fb)):
+            urls[side, label] = views.data_url(renderer.render(src, views.view_options(theta, phi, PICK_PX)))
+    ledger = Ledger(credit_cap=PICK_CREDITS + 1, call_cap=8)
+
+    def job(k: int, label: str, order: str):
+        first, second = (urls["a", label], urls["b", label]) if order == "ab" else (urls["b", label], urls["a", label])
+
+        def ask():
+            return s1pick.parse(_call(witness, ledger, PICK_IDS + k, "duel", "", [], model=PICK_MODEL, effort=PICK_EFFORT,
+                                      instructions=s1pick.SYSTEM, content=s1pick.content(photo, first, second, label)))
+        return ask
+
+    jobs = []
+    for i, (_, _, label) in enumerate(s1pick.ANGLES):
+        jobs += [job(2 * i, label, "ab"), job(2 * i + 1, label, "ba")]
+    replies = _parallel(jobs)
+    angles = [s1pick.angle_penalties(replies[2 * i], replies[2 * i + 1]) for i in range(len(s1pick.ANGLES))]
+    choice, _gap = s1pick.aggregate(angles)
+    return choice, ledger.credits
+
+
+def _final_refine(witness, renderer, ref: bytes, best: str, sheet: bytes, request_id: int, text: str,
+                  notes: str | None) -> tuple[str, bytes]:
     """One more refinement of the picked module against the four camera views; kept only if it renders."""
     ledger = Ledger(credit_cap=FINAL_REFINE_CREDITS + 1, call_cap=1)
-    js = extract(_call(witness, ledger, request_id, "final", prompts.REFINE_USER % best, [ref, sheet],
-                       effort=REFINE_EFFORT))
+    text = text % best
+    if notes:
+        text += prompts.CHECK_REFINE % notes
+    js = extract(_call(witness, ledger, request_id, "final", text, [ref, sheet], effort=REFINE_EFFORT))
     wrapped = wrap(js) if js is not None else None
     if wrapped is None:
         return best, sheet
@@ -228,32 +274,42 @@ def _final_refine(witness, renderer, ref: bytes, best: str, sheet: bytes, reques
 
 def run(image: bytes, seed: int, witness, renderer) -> str | None:
     ref = _png(image)
-    key = hashlib.sha256(image).hexdigest()[:16]
-    chains = [_Chain(i, key) for i in range(CHAINS)]
+    notes, spent = None, 0.0
+    if config.CHECKLIST:
+        notes, spent = _plan(witness, ref)
+    chains = [_Chain(i, notes) for i in range(CHAINS)]
     while True:
         planned = [(c, c.next_job(witness, ref)) for c in chains if not c.done]
-        planned = [(c, p) for c, p in planned if p is not None]
+        planned = [(c, job) for c, job in planned if job is not None]
         if not planned:
             break
-        results = _parallel([job for _, (job, _) in planned])
-        for (c, (_, kind)), js in zip(planned, results):
+        results = _parallel([job for _, job in planned])
+        for (c, _), js in zip(planned, results):
             c.js = js
             c.step += 1
-            c.settle(renderer, kind)
-    found = [c.best for c in chains if c.best is not None]
-    spent = sum(c.ledger.credits for c in chains)
+            c.settle(renderer)
+    found = [c for c in chains if c.best is not None]
+    spent += sum(c.ledger.credits for c in chains)
+    best_chain = found[0] if found else None
     if len(found) > 1 and spent + 2 * EXPECTED_PANEL_CREDITS <= TOTAL_CREDITS:
-        best = _panel(witness, renderer, ref, found)
-    else:
-        best = found[0] if found else None
-    if best is not None:
-        sheet = next(c.best_sheet for c in chains if c.best is best)
+        order, used = _panel(witness, renderer, ref, [c.best for c in found], notes)
+        spent += max(used, 2 * EXPECTED_PANEL_CREDITS)
+        best_chain = found[order[0]]
+        if config.S1_PICK and spent + PICK_CREDITS + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
+            runner_up = found[order[1]]
+            choice, used = _s1_pick(witness, renderer, ref, best_chain.best, runner_up.best)
+            spent += used
+            if choice == "B":
+                best_chain = runner_up
+    best = None
+    if best_chain is not None:
+        best, sheet = best_chain.best, best_chain.best_sheet
         for k in range(FINAL_REFINES):
-            if spent + 2 * EXPECTED_PANEL_CREDITS + (k + 1) * FINAL_REFINE_CREDITS > TOTAL_CREDITS:
+            if spent + (k + 1) * FINAL_REFINE_CREDITS > TOTAL_CREDITS:
                 break
-            best, sheet = _final_refine(witness, renderer, ref, best, sheet, FINAL_REFINE_ID + k)
+            text = prompts.FINAL_REFINE_USER if (config.STRUCTURE_REFINE and k == 0) else prompts.REFINE_USER
+            best, sheet = _final_refine(witness, renderer, ref, best, sheet, FINAL_REFINE_ID + k, text, notes)
     out = final(best) if best is not None else None
-    _trace(key, "final", out)
     if out is None:
         raise RuntimeError("no valid module")  # never submit an empty result; the runner retries the prompt
     return out

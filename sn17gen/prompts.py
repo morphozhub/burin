@@ -1,3 +1,5 @@
+from . import config
+
 RULES = """Module contract (violations are rejected by a static validator):
 - Return ONLY JavaScript. One export: `export default function generate(THREE) { ... return root; }`, synchronous.
 - THREE exists only as that parameter. Helpers that need it take a parameter named exactly `THREE`. Never alias THREE, never `THREE[expr]`, never reference THREE at top level.
@@ -19,8 +21,15 @@ CRAFT = """Craft:
 - Keep surfaces closed; avoid thin floating planes, z-fighting and parts poking through each other.
 - Wheels turn with their axle: for a vehicle shown from the side (length along X, axles along Z) tyres keep the default TorusGeometry orientation and CylinderGeometry hubs need rotation.x = Math.PI / 2; for a vehicle facing +Z (axles along X) tyres need rotation.y = Math.PI / 2 and hubs rotation.z = Math.PI / 2."""
 
+METAL_TABLE = """- Metal shades for the judge's white neutral render (it darkens metals; carry the shade in a light base colour): chrome/stainless/polished steel #d9d9d9 metalness 0.5 roughness 0.2; brushed steel/aluminium #c8c8c8 metalness 0.45 roughness 0.4; silver #cfcfcf 0.5/0.3; gold #e0b84a 0.5/0.3; brass #d4b36a 0.5/0.35; copper #d4895a 0.5/0.35; bronze #b8864e 0.45/0.4; black/gunmetal #3a3a3e metalness 0.3 roughness 0.5. Never express a metal as a dark colour with high metalness: the judge reads it as "black instead of silver/gold/copper"."""
+
+GLASS_RULES = """- Glass, crystal, gemstones and liquids: tinted solids, never transmission. Glass and clear plastic: transparent: true, opacity 0.45-0.6, the tint seen in the photo (clear glass #dfe9ee), roughness <= 0.15, metalness 0, plus thin opaque rims, bases and edges so the silhouette reads. Faceted gems: low-poly polyhedra (Octahedron/Dodecahedron/Icosahedron, flatShading: true) in the stone's saturated colour, opacity 0.7-0.85, with a visible setting. Liquids: a tinted lathe/cylinder inside the vessel with a flat top disc in a slightly lighter shade; bubbles or foam as small spheres placed by index-based sin/cos patterns."""
+
 GEN_SYSTEM = ("You are an expert technical artist who rebuilds objects from a single reference photo as procedural Three.js models.\n\n"
-              + JUDGING + "\n\n" + CRAFT + "\n\n" + RULES
+              + JUDGING + "\n\n" + CRAFT
+              + ("\n" + METAL_TABLE if config.METAL_TABLE else "")
+              + ("\n" + GLASS_RULES if config.GLASS_RULES else "")
+              + "\n\n" + RULES
               + "\n\nDetail: write a thorough module, about 6,000-8,000 tokens of code. Spend the length on what the photo shows: "
     "every distinct part, accurate profiles and proportions, bevels, rims, seams and panel lines, buttons, keys, screws, "
     "holes, feet and hinges, and painted or printed patterns (procedural DataTextures or thin surface geometry). "
@@ -66,3 +75,37 @@ Output JSON only: {"penalties": [<one number per candidate, in order>]}"""
 GEN_USER_ALT = ("Reference photo attached. Write the complete Three.js module for this object. Start from the proportions: "
                 "measure the width, height and depth of every major part relative to the whole object and write them as "
                 "named constants, then build every part from them. Output only the JavaScript.")
+
+STRUCTURE_CHECK = ("Before changing anything, go over the photo part by part and check the model against it: the "
+                   "overall width : height : depth, every part's shape, size and position, and the exact count of every "
+                   "repeated part (legs, handles, cushions, petals, rings, spokes, buttons). Name the structure that makes "
+                   "the object recognisable (for example X-shaped folding legs, two moulded side handles, thin double "
+                   "rings, plump rolled arms) and make sure the model has that structure and not a simpler substitute.")
+FINAL_REFINE_USER = REFINE_USER.replace("Return the complete improved module",
+                                        STRUCTURE_CHECK + "\nReturn the complete improved module", 1)
+
+PLAN_SYSTEM = ("You study one reference photo of an object before it is rebuilt as a procedural 3D model. "
+               "Reply with short plain-text notes. No code.")
+
+PLAN_USER = """Reference photo attached. Write notes for rebuilding this object, under 2,000 characters, in this order:
+Object: what the object is.
+View: which side of the object faces the camera, and the camera elevation in degrees.
+Proportions: overall width:height:depth.
+Parts: each distinct part with its count, shape and hex colour as it would look under neutral white light.
+Text: visible text or markings, or none.
+Checklist: then 5-7 lines starting with "- ", each one feature a judge comparing a render with this photo would verify."""
+
+PLAN_NOTES = """Notes from a first look at the photo; the photo wins where they disagree:
+%s
+
+"""
+
+CHECK_REFINE = """
+
+Checklist from a first look at the photo (the photo wins where they disagree); make sure each item matches:
+%s"""
+
+CHECK_PANEL = """Features a faithful model should match (from a first look at the reference; the reference wins where they disagree):
+%s
+
+"""
