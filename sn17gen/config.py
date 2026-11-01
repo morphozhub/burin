@@ -2,7 +2,7 @@
 
 # First final refinement walks the photo part by part (counts of repeated parts, the recognisable
 # structure) before changing anything; the second one is the plain four-view refinement.
-STRUCTURE_REFINE = False
+STRUCTURE_REFINE = True
 
 # Light-base metal shade table appended to the craft rules (the judge's white neutral render darkens
 # metals; "dark/black instead of silver" is its most frequent complaint).
@@ -35,9 +35,9 @@ PARALLEL_CALLS = 3
 
 # Number of final refinements of the picked module on the judge's four-camera sheet (base 2).
 # Rabbit's round-1 chain winner ran 3 and beat its own sibling with 2 by +0.117; ids 950 + k.
-FINAL_REFINES = 2
+FINAL_REFINES = 3
 
 # Round-1 chain winner's selection: instead of the Astra panel, every pair of finalists duels on the
 # judge's four single front views in both orders (Sol low, 8 calls per pair, penalties summed); with more
 # than three finalists the panel first narrows them to three (24 duel calls, ids 910-933).
-TOURNAMENT_PICK = False
+TOURNAMENT_PICK = True
