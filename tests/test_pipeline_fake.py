@@ -1,6 +1,7 @@
 """The pipeline against a fake witness and renderer: stage order, request ids, call counts, flag paths."""
 import io
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -8,7 +9,7 @@ from pathlib import Path
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from sn17gen import config, pipeline  # noqa: E402
+from sn17gen import config, pipeline, prompts  # noqa: E402
 
 JS = "export default function generate(THREE) {\n  const root = new THREE.Group();\n  return root;\n}"
 
@@ -54,7 +55,8 @@ class FakeWitness:
 
 BASE_FLAGS = dict(STRUCTURE_REFINE=False, METAL_TABLE=False, GLASS_RULES=False, S1_PICK=False, CHECKLIST=False,
                   DRAFT_HIGH=False, CHAINS=3, PARALLEL_CALLS=3, FINAL_REFINES=2, TOURNAMENT_PICK=False,
-                  TOURNAMENT_MODEL=None, GUARDED_REFINES=False, JUDGE_NOTES=False)
+                  TOURNAMENT_MODEL=None, GUARDED_REFINES=False, JUDGE_NOTES=False, GUARD_LAST=False, DETAIL_KIT=False,
+                  SCORE_NARROW=0, PROPORTION_NOTE=False)
 
 
 def _pin(monkeypatch, **flags):
@@ -261,3 +263,81 @@ def test_judge_notes_add_four_critic_calls_before_every_final_refinement(monkeyp
     for text in w.final_texts:
         assert "A judge compared single renders" in text and "handle 30% too short" in text
         assert "seen from slightly left of the front" in text and "export default function generate" in text
+
+
+def test_guard_last_duels_only_after_the_last_of_three_refines(monkeypatch):
+    _pin(monkeypatch, GUARD_LAST=True, FINAL_REFINES=3)
+    w = GuardWitness(1)
+    out = pipeline.run(_png(), 1, w, FakeRenderer())
+    assert sorted(i for i in w.ids if pipeline.GUARD_IDS <= i < pipeline.FINAL_IDS) == list(range(876, 884))
+    assert "// 952" not in out and "// 951" in out  # the last refinement lost its duel, the one before it stays
+
+
+class ScoreWitness(FakeWitness):
+    """Single-view scores: candidate 3 (ids 812-815) is best, candidate 0 second; pairwise duels are neutral."""
+
+    def create(self, *, request_id, **kw):
+        if pipeline.SCORE_IDS <= request_id < pipeline.SCORE_IDS + 16:
+            self.ids.append(request_id)
+            cand = (request_id - pipeline.SCORE_IDS) // 4
+            pen = {3: 1, 0: 2, 1: 6, 2: 7}[cand]
+            return types.SimpleNamespace(output_text=f'{{"penalty": {pen}, "issues": "x"}}', usage={"input_tokens": 1, "output_tokens": 1})
+        if pipeline.TOURNAMENT_IDS <= request_id < pipeline.TOURNAMENT_IDS + 24:
+            self.ids.append(request_id)
+            return types.SimpleNamespace(output_text='{"penalty_1": 4, "penalty_2": 4}', usage={"input_tokens": 1, "output_tokens": 1})
+        return super().create(request_id=request_id, **kw)
+
+
+def test_score_narrow_scores_four_chains_then_duels_the_best_two(monkeypatch):
+    _pin(monkeypatch, CHAINS=4, TOURNAMENT_PICK=True, SCORE_NARROW=2, FINAL_REFINES=1)
+    w = ScoreWitness()
+    out = pipeline.run(_png(), 1, w, FakeRenderer())
+    scores = sorted(i for i in w.ids if pipeline.SCORE_IDS <= i < pipeline.SCORE_IDS + 16)
+    duels = sorted(i for i in w.ids if pipeline.TOURNAMENT_IDS <= i < pipeline.TOURNAMENT_IDS + 24)
+    assert scores == list(range(800, 816)) and duels == list(range(910, 918))
+    assert not any(pipeline.FINAL_IDS <= i < pipeline.FINAL_IDS + 2 for i in w.ids)  # no Astra panel
+    assert len(w.ids) == 12 + 16 + 8 + 1
+    assert "// 950" in out  # the refinement of the scored winner (chain 4) is what ships
+
+
+def test_detail_kit_text_follows_the_flag(monkeypatch):
+    import importlib
+    monkeypatch.setattr(config, "DETAIL_KIT", True)
+    importlib.reload(prompts)
+    assert "textTexture" in prompts.GEN_SYSTEM
+    monkeypatch.setattr(config, "DETAIL_KIT", False)
+    importlib.reload(prompts)
+    assert "textTexture" not in prompts.GEN_SYSTEM
+
+
+def _shape_png(size, box, colour=(40, 40, 40), bg=(255, 255, 255)):
+    from PIL import ImageDraw
+    img = Image.new("RGB", size, bg)
+    ImageDraw.Draw(img).rectangle(box, fill=colour)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_proportion_note_measures_photo_and_render_and_skips_busy_backgrounds():
+    wide = _shape_png((400, 400), (50, 150, 350, 250), bg=(200, 210, 220))   # 3:1 object on a plain photo background
+    tall = _shape_png((512, 512), (200, 50, 300, 450))                        # 1:4 render on white
+    assert abs(pipeline._aspect(wide, photo=True) - 3.0) < 0.2
+    assert abs(pipeline._aspect(tall, photo=False) - 0.25) < 0.05
+
+    class R:
+        def render(self, src, opts):
+            return tall
+    note = pipeline._proportion_note(R(), wide, JS)
+    assert note and "%" not in note
+    nums = [float(x) for x in re.findall(r"\d+\.\d+", note)]
+    assert abs(nums[0] - 3.0) < 0.2 and abs(nums[1] - 0.25) < 0.05
+    same = _shape_png((512, 512), (56, 200, 456, 333))                        # 3:1 render: no note
+    class R2:
+        def render(self, src, opts):
+            return same
+    assert pipeline._proportion_note(R2(), wide, JS) is None
+    noisy = Image.new("RGB", (200, 200))
+    noisy.putdata([((x * 37) % 256, (y * 91) % 256, (x * y) % 256) for y in range(200) for x in range(200)])
+    buf = io.BytesIO(); noisy.save(buf, format="PNG")
+    assert pipeline._aspect(buf.getvalue(), photo=True) is None

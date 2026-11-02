@@ -54,3 +54,20 @@ GUARDED_REFINES = False
 # module on each of the judge's four single front views and names the visible differences from the photo;
 # its notes are appended to the refinement request (4 calls per refinement, ids 840 + 4k).
 JUDGE_NOTES = False
+
+# Guard only the LAST final refinement (one before/after duel on the judge's four views, both orders, 8 calls,
+# ids 860 + 8k): the cheap form of GUARDED_REFINES, which never lost on the stand but needed 60 calls.
+GUARD_LAST = False
+
+# Detail kit: ready-made snippets for the features the judge most often reports missing (printed text and logos as
+# pixel-font DataTextures, ridges/fluting, serrations, stitching, stripes, knurled or brushed surfaces), appended
+# to the craft rules of every generation and refinement call.
+DETAIL_KIT = False
+
+# With more finalists than the tournament takes, narrow them by single-view judge scores (the tournament's model
+# and effort, 4 calls per candidate, ids 800 + 4i) instead of the Astra panel; 0 = off, N = keep the best N.
+SCORE_NARROW = 0
+
+# Proportion note: the object's measured width:height in the photo versus the module's near-frontal render,
+# appended to every final refinement when they differ by more than 15 percent (no model calls).
+PROPORTION_NOTE = False

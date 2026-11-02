@@ -264,6 +264,7 @@ TOURNAMENT_CALL_CREDITS = 40_000
 
 
 GUARD_IDS = 860
+SCORE_IDS = 800           # 4 ids per finalist (800 + 4i): single-view judge scores that narrow the finalists
 CRITIC_IDS = 840          # 4 ids per final refinement (840 + 4k): one critic call per judge view, below the guard block
 
 
@@ -309,6 +310,88 @@ def _tournament(witness, renderer, ref: bytes, modules: list[str], ids: int = TO
         pen[x] += p1
         pen[y] += p2
     return min(alive, key=lambda i: (pen[i], i)), ledger.credits, pen
+
+
+def _score(witness, renderer, ref: bytes, modules: list[str], ids: int = SCORE_IDS) -> tuple[list[float], float]:
+    """Single-view judge score of every module: one low-effort critic call per judge view (the tournament's model),
+    penalties summed per module (unrenderable modules score worst). Returns (penalties by index, credits)."""
+    photo = views.data_url(ref)
+    shots: dict[int, dict[str, str]] = {}
+    for i, js in enumerate(modules):
+        src = final(js)
+        if src is None:
+            continue
+        try:
+            shots[i] = {label: views.data_url(renderer.render(src, views.view_options(t, p, PICK_PX)))
+                        for t, p, label in s1pick.ANGLES}
+        except Exception as exc:
+            if type(exc).__name__ != "RenderRejected":
+                raise
+    asks = [(i, label) for i in sorted(shots) for _, _, label in s1pick.ANGLES]
+    ledger = Ledger(credit_cap=len(asks) * _tournament_call_credits() + 1, call_cap=max(len(asks), 1))
+
+    def job(k: int, i: int, label: str):
+        def ask():
+            return s1pick.parse_penalty(_call(witness, ledger, ids + k, "score", "", [], model=config.TOURNAMENT_MODEL,
+                                             effort=TOURNAMENT_EFFORT, instructions=s1pick.SYSTEM,
+                                             content=s1pick.critic_content(photo, shots[i][label], label)))
+        return ask
+
+    replies = _parallel([job(k, i, label) for k, (i, label) in enumerate(asks)])
+    pen = [4 * 11.0] * len(modules)
+    for i in shots:
+        pen[i] = 0.0
+    for (i, _), p in zip(asks, replies):
+        pen[i] += p
+    return pen, ledger.credits
+
+
+def _aspect(png: bytes, photo: bool) -> float | None:
+    """Width / height of the object's bounding box. Renders: anything darker than near-white. Photos: pixels that
+    differ clearly from the border colour; None when the border is not a plain background."""
+    img = Image.open(io.BytesIO(png)).convert("RGB")
+    img.thumbnail((256, 256))
+    w, h = img.size
+    px = img.load()
+    if photo:
+        border = [px[x, y] for x in range(w) for y in (0, h - 1)] + [px[x, y] for y in range(h) for x in (0, w - 1)]
+        mean = [sum(c[k] for c in border) / len(border) for k in range(3)]
+        spread = sum(abs(c[k] - mean[k]) for c in border for k in range(3)) / len(border)
+        if spread > 45:
+            return None
+        hit = lambda c: sum(abs(c[k] - mean[k]) for k in range(3)) > 90  # noqa: E731
+    else:
+        hit = lambda c: sum(c) < 3 * 245  # noqa: E731
+    xs, ys = [], []
+    for y in range(h):
+        for x in range(w):
+            if hit(px[x, y]):
+                xs.append(x)
+                ys.append(y)
+    if len(xs) < 50:
+        return None
+    xs.sort(); ys.sort()
+    lo, hi = len(xs) // 100, len(xs) - 1 - len(xs) // 100  # trim 1 percent of outliers each side
+    bw, bh = xs[hi] - xs[lo] + 1, ys[hi] - ys[lo] + 1
+    return bw / bh if bh > 0 else None
+
+
+def _proportion_note(renderer, ref: bytes, js: str) -> str | None:
+    """Photo versus near-frontal render (the judge's slightly-below camera) width:height; a note when they differ
+    by more than 15 percent, None when either cannot be measured or they agree."""
+    src = final(js)
+    want = _aspect(ref, photo=True)
+    if src is None or want is None:
+        return None
+    try:
+        have = _aspect(renderer.render(src, views.view_options(0, 15, views.VIEW_PX)), photo=False)
+    except Exception as exc:
+        if type(exc).__name__ != "RenderRejected":
+            raise
+        return None
+    if have is None or abs(have - want) <= 0.15 * max(want, have):
+        return None
+    return prompts.PROPORTION_REFINE.format(photo=want, model=have)
 
 
 def _critique(witness, renderer, ref: bytes, js: str, ids: int) -> tuple[str | None, float]:
@@ -374,7 +457,14 @@ def run(image: bytes, seed: int, witness, renderer) -> str | None:
     best_chain = found[0] if found else None
     if len(found) > 1 and spent + 2 * EXPECTED_PANEL_CREDITS <= TOTAL_CREDITS:
         finalists = found
-        if len(found) > TOURNAMENT_MAX or not config.TOURNAMENT_PICK:
+        if config.TOURNAMENT_PICK and config.SCORE_NARROW and len(found) > config.SCORE_NARROW \
+                and spent + 4 * len(found) * _tournament_call_credits() + _tournament_cost(config.SCORE_NARROW) + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
+            pen, used = _score(witness, renderer, ref, [c.best for c in found])
+            spent += used
+            order = sorted(range(len(found)), key=lambda i: (pen[i], i))
+            best_chain = found[order[0]]
+            finalists = [found[i] for i in order[:config.SCORE_NARROW]]
+        elif len(found) > TOURNAMENT_MAX or not config.TOURNAMENT_PICK:
             order, used = _panel(witness, renderer, ref, [c.best for c in found], notes)
             spent += max(used, 2 * EXPECTED_PANEL_CREDITS)
             best_chain = found[order[0]]
@@ -392,10 +482,15 @@ def run(image: bytes, seed: int, witness, renderer) -> str | None:
     best = None
     if best_chain is not None:
         best, sheet = best_chain.best, best_chain.best_sheet
-        for k in range(min(config.FINAL_REFINES, PICK_IDS - FINAL_REFINE_ID)):
+        n_refines = min(config.FINAL_REFINES, PICK_IDS - FINAL_REFINE_ID)
+        for k in range(n_refines):
             if spent + (k + 1) * FINAL_REFINE_CREDITS > TOTAL_CREDITS:
                 break
             text = prompts.FINAL_REFINE_USER if (config.STRUCTURE_REFINE and k == 0) else prompts.REFINE_USER
+            if config.PROPORTION_NOTE:
+                note = _proportion_note(renderer, ref, best)
+                if note:
+                    text += note  # numbers only, no percent signs: safe before the module substitution
             if config.JUDGE_NOTES and spent + 4 * _tournament_call_credits() + (k + 1) * FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
                 judge_notes, used = _critique(witness, renderer, ref, best, CRITIC_IDS + 4 * k)
                 spent += used
@@ -403,7 +498,8 @@ def run(image: bytes, seed: int, witness, renderer) -> str | None:
                     text += prompts.JUDGE_REFINE % judge_notes.replace("%", "%%")  # the module is substituted later
             before, before_sheet = best, sheet
             best, sheet = _final_refine(witness, renderer, ref, best, sheet, FINAL_REFINE_ID + k, text, notes)
-            if config.GUARDED_REFINES and best is not before and spent + _tournament_cost(2) + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
+            guard = config.GUARDED_REFINES or (config.GUARD_LAST and k == n_refines - 1)
+            if guard and best is not before and spent + _tournament_cost(2) + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
                 _idx, used, pen = _tournament(witness, renderer, ref, [before, best], ids=GUARD_IDS + 8 * k)
                 spent += used
                 if pen and pen.get(0, 0.0) < pen.get(1, 0.0):  # the refinement lost its duel: keep the module before it

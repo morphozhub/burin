@@ -98,3 +98,13 @@ def aggregate(angles: list[tuple[float, float]]) -> tuple[str, float]:
     if abs(gap) <= DRAW_BAND:
         return "draw", gap
     return ("A" if gap > 0 else "B"), gap
+
+
+def parse_penalty(text: str | None) -> float:
+    """Single-model critic penalty 0-10; unreadable or out-of-range replies count as a neutral 5."""
+    m = re.search(r"\{.*\}", text or "", re.S)
+    try:
+        p = float(json.loads(m.group(0))["penalty"]) if m else 5.0
+    except (ValueError, KeyError, TypeError):
+        return 5.0
+    return p if 0.0 <= p <= 10.0 else 5.0

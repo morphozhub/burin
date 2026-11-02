@@ -25,10 +25,27 @@ METAL_TABLE = """- Metal shades for the judge's white neutral render (it darkens
 
 GLASS_RULES = """- Glass, crystal, gemstones and liquids: tinted solids, never transmission. Glass and clear plastic: transparent: true, opacity 0.45-0.6, the tint seen in the photo (clear glass #dfe9ee), roughness <= 0.15, metalness 0, plus thin opaque rims, bases and edges so the silhouette reads. Faceted gems: low-poly polyhedra (Octahedron/Dodecahedron/Icosahedron, flatShading: true) in the stone's saturated colour, opacity 0.7-0.85, with a visible setting. Liquids: a tinted lathe/cylinder inside the vessel with a flat top disc in a slightly lighter shade; bubbles or foam as small spheres placed by index-based sin/cos patterns."""
 
+
+DETAIL_KIT = """Detail kit (copy and adapt these when the photo shows the feature; they are the details a judge most often reports missing):
+- Printed text, logos, labels: a pixel-font DataTexture on the face that carries them. Build it once:
+  function textTexture(THREE, text, fg, bg, w, h) { const F = {A:"0E1F1B1F1B1B1B",B:"1E1B1B1E1B1B1E",C:"0E1B18181B1B0E",D:"1E1B1B1B1B1B1E",E:"1F18181E18181F",F:"1F18181E181818",G:"0E1B181F1B1B0E",H:"1B1B1B1F1B1B1B",I:"0E0C0C0C0C0C0E",K:"1B1B1E1C1E1B1B",L:"1818181818181F",M:"111B1F1F151111",N:"11191D15131111",O:"0E1B1B1B1B1B0E",P:"1E1B1B1E181818",R:"1E1B1B1E1B1B1B",S:"0E1B180E031B0E",T:"1F0C0C0C0C0C0C",U:"1B1B1B1B1B1B0E",V:"1B1B1B1B1B0E04",W:"1111151F1F1B11",X:"1B1B0E040E1B1B",Y:"1B1B0E0C0C0C0C",Z:"1F03060C18181F","0":"0E1B1B1B1B1B0E","1":"040C040404040E","2":"0E1B03060C181F","3":"0E1B030E031B0E","4":"06060A121F0202","5":"1F18181E031B0E","6":"060C181E1B1B0E","7":"1F03060C0C0C0C","8":"0E1B1B0E1B1B0E","9":"0E1B1B0F03060C","-":"0000001F000000"," ":"00000000000000"}; const d = new Uint8Array(w * h * 4); const cell = Math.floor(w / Math.max(text.length, 1)); const sx = Math.max(1, Math.floor(cell / 6)), sy = Math.max(1, Math.floor(h / 9)); for (let i = 0; i < w * h; i++) { d[4 * i] = bg[0]; d[4 * i + 1] = bg[1]; d[4 * i + 2] = bg[2]; d[4 * i + 3] = 255; } for (let c = 0; c < text.length; c++) { const g = F[text[c].toUpperCase()] || F[" "]; for (let r = 0; r < 7; r++) { const bits = parseInt(g.substr(2 * r, 2), 16); for (let b = 0; b < 5; b++) if (bits & (16 >> b)) for (let yy = 0; yy < sy; yy++) for (let xx = 0; xx < sx; xx++) { const x = c * cell + b * sx + xx, y = (h - sy * 8) / 2 + r * sy + yy; if (x >= 0 && x < w && y >= 0 && y < h) { const k = 4 * ((h - 1 - Math.floor(y)) * w + x); d[k] = fg[0]; d[k + 1] = fg[1]; d[k + 2] = fg[2]; } } } } const t = new THREE.DataTexture(d, w, h, THREE.RGBAFormat, THREE.UnsignedByteType); t.colorSpace = THREE.SRGBColorSpace; t.needsUpdate = true; return t; }
+  Use 256x64 or 512x128, map it on a PlaneGeometry or BoxGeometry face slightly in front of the surface, and give the label its real background colour.
+- Ridges, fluting, grooves on round parts: an InstancedMesh of thin boxes or capsules around the axis (count from the photo), or a LatheGeometry profile that zig-zags (radius +- depth every few points). Serrated or toothed edges: an InstancedMesh of small ConeGeometry/TetrahedronGeometry teeth along the edge with the exact count.
+- Stitching and seams: a row of small CapsuleGeometry dashes along a CatmullRomCurve3 (getSpacedPoints) in a contrasting thread colour; piping or welts as a TubeGeometry along the same curve.
+- Stripes, checks, bands: a DataTexture of the right colours (RepeatWrapping, repeat set on the texture) rather than many meshes; wood grain, fabric, brushed metal or knurling: a small procedural DataTexture used as map and bumpMap (bumpScale 0.01-0.03), so the surface is not flat.
+- Rivets, screws, buttons, holes, vents: InstancedMesh of spheres/cylinders placed by index with the photo's counts; holes as dark cylinders flush with the surface.
+- Hand-holds, cables, straps: TubeGeometry along CatmullRomCurve3 with the correct thickness; buckles and rings as TorusGeometry.
+Spend these on the parts the front cameras see; keep the whole module under the vertex and mesh budget."""
+
+PROPORTION_REFINE = """
+
+Measured against the photo: the object's visible width to height ratio is {photo:.2f} in the photo but {model:.2f} in your module's render from the same near-frontal camera. Fix the overall proportions (and the pose if the mismatch comes from orientation) before anything else."""
+
 GEN_SYSTEM = ("You are an expert technical artist who rebuilds objects from a single reference photo as procedural Three.js models.\n\n"
               + JUDGING + "\n\n" + CRAFT
               + ("\n" + METAL_TABLE if config.METAL_TABLE else "")
               + ("\n" + GLASS_RULES if config.GLASS_RULES else "")
+              + ("\n\n" + DETAIL_KIT if config.DETAIL_KIT else "")
               + "\n\n" + RULES
               + "\n\nDetail: write a thorough module, about 6,000-8,000 tokens of code. Spend the length on what the photo shows: "
     "every distinct part, accurate profiles and proportions, bevels, rims, seams and panel lines, buttons, keys, screws, "
