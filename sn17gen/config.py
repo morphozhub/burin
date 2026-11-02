@@ -2,7 +2,7 @@
 
 # First final refinement walks the photo part by part (counts of repeated parts, the recognisable
 # structure) before changing anything; the second one is the plain four-view refinement.
-STRUCTURE_REFINE = False
+STRUCTURE_REFINE = True
 
 # Light-base metal shade table appended to the craft rules (the judge's white neutral render darkens
 # metals; "dark/black instead of silver" is its most frequent complaint).
@@ -35,12 +35,12 @@ PARALLEL_CALLS = 3
 
 # Number of final refinements of the picked module on the judge's four-camera sheet (base 2).
 # Rabbit's round-1 chain winner ran 3 and beat its own sibling with 2 by +0.117; ids 950 + k.
-FINAL_REFINES = 2
+FINAL_REFINES = 5
 
 # Round-1 chain winner's selection: instead of the Astra panel, every pair of finalists duels on the
 # judge's four single front views in both orders (Sol low, 8 calls per pair, penalties summed); with more
 # than three finalists the panel first narrows them to three (24 duel calls, ids 910-933).
-TOURNAMENT_PICK = False
+TOURNAMENT_PICK = True
 
 # Model that judges the tournament duels: None = the generation model (Sol, the chain winner's choice),
 # "gpt-6-astra" = the stronger vision model (our picker calibration: 40/40 on clear pairs).
@@ -57,7 +57,7 @@ JUDGE_NOTES = False
 
 # Guard only the LAST final refinement (one before/after duel on the judge's four views, both orders, 8 calls,
 # ids 860 + 8k): the cheap form of GUARDED_REFINES, which never lost on the stand but needed 60 calls.
-GUARD_LAST = False
+GUARD_LAST = True
 
 # Detail kit: ready-made snippets for the features the judge most often reports missing (printed text and logos as
 # pixel-font DataTextures, ridges/fluting, serrations, stitching, stripes, knurled or brushed surfaces), appended

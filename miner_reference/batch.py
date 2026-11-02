@@ -365,6 +365,9 @@ def main() -> None:
             hotkey=hotkey,
             openai_api_key=os.environ["OPENAI_API_KEY"] if args.api else None,
             subscription=None if args.api else "codex",
+            parallel_calls=settings.parallel_calls,
+            parallel_preparations=settings.parallel_calls,
+            delivery_timeout=1800,
         ) as witness,
         RendererClient(
             args.renderer_url or "https://witness.internal/v1",
