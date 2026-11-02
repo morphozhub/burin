@@ -5,6 +5,8 @@ import io
 
 from PIL import Image
 
+from . import config
+
 SHEET = ((30, 0), (330, 0), (0, 15), (0, -30))  # the judge's four front cameras
 VIEW_PX = 512
 
@@ -57,7 +59,7 @@ def _sheet(render, source: str, pairs, px: int) -> bytes:
 
 
 def sheet(render, source: str) -> bytes:
-    return _sheet(render, source, SHEET, VIEW_PX)
+    return _sheet(render, source, SHEET, config.SHEET_PX)
 
 
 FRONT = ((30, 0), (330, 0), (0, 15), (0, -30))

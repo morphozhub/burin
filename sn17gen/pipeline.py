@@ -123,8 +123,9 @@ class _Chain:
 
     def __init__(self, idx: int, notes: str | None) -> None:
         self.idx, self.base, self.notes = idx, (idx + 1) * ID_BLOCK, notes
-        self.ledger = Ledger(credit_cap=CHAIN_CREDITS, call_cap=CHAIN_CALLS)
-        self.stop, self.spare, self.retries, self.seen = CALLS, REPAIRS, PROVIDER_RETRIES, 0
+        calls = 1 + config.CHAIN_REFINES  # generation plus the chain's refinements (CALLS at the base setting)
+        self.ledger = Ledger(credit_cap=EXPECTED_CALL_CREDITS * calls, call_cap=calls + REPAIRS + PROVIDER_RETRIES)
+        self.stop, self.spare, self.retries, self.seen = calls, REPAIRS, PROVIDER_RETRIES, 0
         self.best: str | None = None
         self.best_sheet: bytes | None = None
         self.js: str | None = None
@@ -269,7 +270,8 @@ CRITIC_IDS = 840          # 4 ids per final refinement (840 + 4k): one critic ca
 
 
 def _tournament_call_credits() -> float:
-    return 2 * TOURNAMENT_CALL_CREDITS if config.TOURNAMENT_MODEL == "gpt-6-astra" else TOURNAMENT_CALL_CREDITS
+    base = 2 * TOURNAMENT_CALL_CREDITS if config.TOURNAMENT_MODEL == "gpt-6-astra" else TOURNAMENT_CALL_CREDITS
+    return base if config.TOURNAMENT_EFFORT == "low" else 2 * base
 
 
 def _tournament_cost(n: int) -> float:
@@ -300,7 +302,7 @@ def _tournament(witness, renderer, ref: bytes, modules: list[str], ids: int = TO
     def job(k: int, x: int, y: int, label: str):
         def ask():
             return s1pick.parse(_call(witness, ledger, ids + k, "duel", "", [], model=config.TOURNAMENT_MODEL,
-                                      effort=TOURNAMENT_EFFORT, instructions=s1pick.SYSTEM,
+                                      effort=config.TOURNAMENT_EFFORT, instructions=s1pick.SYSTEM,
                                       content=s1pick.content(photo, shots[x][label], shots[y][label], label)))
         return ask
 
@@ -310,6 +312,22 @@ def _tournament(witness, renderer, ref: bytes, modules: list[str], ids: int = TO
         pen[x] += p1
         pen[y] += p2
     return min(alive, key=lambda i: (pen[i], i)), ledger.credits, pen
+
+
+def _knockout(witness, renderer, ref: bytes, modules: list[str], ids: int = TOURNAMENT_IDS) -> tuple[int, float, dict]:
+    """Four finalists: semifinals (1 vs 2, 3 vs 4) and a final, each a both-order duel on the judge's four views
+    (8 calls per duel, ids + 0/8/16). Returns (index of the winner, credits, {})."""
+    credits, winners = 0.0, []
+    for r, (a, b) in enumerate(((0, 1), (2, 3))):
+        idx, used, _pen = _tournament(witness, renderer, ref, [modules[a], modules[b]], ids=ids + 8 * r)
+        credits += used
+        winners.append((a, b)[idx])
+    idx, used, _pen = _tournament(witness, renderer, ref, [modules[w] for w in winners], ids=ids + 16)
+    return winners[idx], credits + used, {}
+
+
+def _knockout_cost() -> float:
+    return 3 * _tournament_cost(2)
 
 
 def _score(witness, renderer, ref: bytes, modules: list[str], ids: int = SCORE_IDS) -> tuple[list[float], float]:
@@ -333,7 +351,7 @@ def _score(witness, renderer, ref: bytes, modules: list[str], ids: int = SCORE_I
     def job(k: int, i: int, label: str):
         def ask():
             return s1pick.parse_penalty(_call(witness, ledger, ids + k, "score", "", [], model=config.TOURNAMENT_MODEL,
-                                             effort=TOURNAMENT_EFFORT, instructions=s1pick.SYSTEM,
+                                             effort=config.TOURNAMENT_EFFORT, instructions=s1pick.SYSTEM,
                                              content=s1pick.critic_content(photo, shots[i][label], label)))
         return ask
 
@@ -412,7 +430,7 @@ def _critique(witness, renderer, ref: bytes, js: str, ids: int) -> tuple[str | N
     def job(k: int, label: str):
         def ask():
             return s1pick.parse_issues(_call(witness, ledger, ids + k, "critic", "", [], model=config.TOURNAMENT_MODEL,
-                                            effort=TOURNAMENT_EFFORT, instructions=s1pick.SYSTEM,
+                                            effort=config.TOURNAMENT_EFFORT, instructions=s1pick.SYSTEM,
                                             content=s1pick.critic_content(photo, shots[label], label)))
         return ask
 
@@ -457,6 +475,7 @@ def run(image: bytes, seed: int, witness, renderer) -> str | None:
     best_chain = found[0] if found else None
     if len(found) > 1 and spent + 2 * EXPECTED_PANEL_CREDITS <= TOTAL_CREDITS:
         finalists = found
+        t_max = 4 if (config.TOURNAMENT_PICK and config.KNOCKOUT) else TOURNAMENT_MAX
         if config.TOURNAMENT_PICK and config.SCORE_NARROW and len(found) > config.SCORE_NARROW \
                 and spent + 4 * len(found) * _tournament_call_credits() + _tournament_cost(config.SCORE_NARROW) + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
             pen, used = _score(witness, renderer, ref, [c.best for c in found])
@@ -464,13 +483,16 @@ def run(image: bytes, seed: int, witness, renderer) -> str | None:
             order = sorted(range(len(found)), key=lambda i: (pen[i], i))
             best_chain = found[order[0]]
             finalists = [found[i] for i in order[:config.SCORE_NARROW]]
-        elif len(found) > TOURNAMENT_MAX or not config.TOURNAMENT_PICK:
+        elif len(found) > t_max or not config.TOURNAMENT_PICK:
             order, used = _panel(witness, renderer, ref, [c.best for c in found], notes)
             spent += max(used, 2 * EXPECTED_PANEL_CREDITS)
             best_chain = found[order[0]]
-            finalists = [found[i] for i in order[:TOURNAMENT_MAX]]
-        if config.TOURNAMENT_PICK and spent + _tournament_cost(len(finalists)) + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
-            idx, used, _pen = _tournament(witness, renderer, ref, [c.best for c in finalists])
+            finalists = [found[i] for i in order[:t_max]]
+        knockout = config.TOURNAMENT_PICK and config.KNOCKOUT and len(finalists) == 4
+        pick_cost = _knockout_cost() if knockout else _tournament_cost(len(finalists))
+        if config.TOURNAMENT_PICK and spent + pick_cost + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:
+            pick = _knockout if knockout else _tournament
+            idx, used, _pen = pick(witness, renderer, ref, [c.best for c in finalists])
             spent += used
             best_chain = finalists[idx]
         elif config.S1_PICK and spent + PICK_CREDITS + FINAL_REFINE_CREDITS <= TOTAL_CREDITS:

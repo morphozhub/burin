@@ -56,7 +56,8 @@ class FakeWitness:
 BASE_FLAGS = dict(STRUCTURE_REFINE=False, METAL_TABLE=False, GLASS_RULES=False, S1_PICK=False, CHECKLIST=False,
                   DRAFT_HIGH=False, CHAINS=3, PARALLEL_CALLS=3, FINAL_REFINES=2, TOURNAMENT_PICK=False,
                   TOURNAMENT_MODEL=None, GUARDED_REFINES=False, JUDGE_NOTES=False, GUARD_LAST=False, DETAIL_KIT=False,
-                  SCORE_NARROW=0, PROPORTION_NOTE=False)
+                  SCORE_NARROW=0, PROPORTION_NOTE=False, CHAIN_REFINES=2, KNOCKOUT=False, TOURNAMENT_EFFORT="low",
+                  SHEET_PX=512)
 
 
 def _pin(monkeypatch, **flags):
@@ -341,3 +342,88 @@ def test_proportion_note_measures_photo_and_render_and_skips_busy_backgrounds():
     noisy.putdata([((x * 37) % 256, (y * 91) % 256, (x * y) % 256) for y in range(200) for x in range(200)])
     buf = io.BytesIO(); noisy.save(buf, format="PNG")
     assert pipeline._aspect(buf.getvalue(), photo=True) is None
+
+
+def test_chain_refines_three_adds_one_call_inside_every_chain_block(monkeypatch):
+    _, w, _ = _run(monkeypatch, CHAIN_REFINES=3)
+    chain = sorted(i for i in w.ids if i < pipeline.FINAL_IDS)
+    assert chain == [100, 101, 102, 103, 200, 201, 202, 203, 300, 301, 302, 303]
+    assert len(w.ids) == 12 + 2 + 2
+
+
+class BracketWitness(FakeWitness):
+    """Duels: the module shown first wins, except that chain 3 (module index 2) always wins its duels."""
+
+    def __init__(self):
+        super().__init__()
+        self.pairs = []
+
+    def create(self, *, request_id, input, **kw):
+        if pipeline.TOURNAMENT_IDS <= request_id < pipeline.FINAL_REFINE_ID:
+            self.ids.append(request_id)
+            urls = [c["image_url"] for c in input[0]["content"] if c["type"] == "input_image"]
+            self.pairs.append((request_id, len(urls)))
+            return types.SimpleNamespace(output_text='{"penalty_1": 2, "penalty_2": 6}', usage={"input_tokens": 1, "output_tokens": 1})
+        return super().create(request_id=request_id, input=input, **kw)
+
+
+def test_knockout_with_four_chains_runs_two_semifinals_and_a_final_without_a_panel(monkeypatch):
+    seen = []
+    _spy_first_final(monkeypatch, seen)
+    _pin(monkeypatch, CHAINS=4, TOURNAMENT_PICK=True, KNOCKOUT=True, FINAL_REFINES=1)
+    w = BracketWitness()
+    out = pipeline.run(_png(), 1, w, FakeRenderer())
+    duels = sorted(i for i in w.ids if pipeline.TOURNAMENT_IDS <= i < pipeline.FINAL_REFINE_ID)
+    assert duels == list(range(910, 934))
+    assert not any(pipeline.FINAL_IDS <= i < pipeline.FINAL_IDS + 2 for i in w.ids)
+    assert len(w.ids) == 12 + 24 + 1
+    # first-shown wins every duel: semifinal 1 -> chain 1 (ids 910-917), semifinal 2 -> chain 3 (918-925), final -> chain 1 (926-933)
+    assert seen and "// 102" in seen[0]
+    assert out and "// 950" in out
+
+
+def test_knockout_with_three_chains_falls_back_to_the_round_robin(monkeypatch):
+    _pin(monkeypatch, CHAINS=3, TOURNAMENT_PICK=True, KNOCKOUT=True, FINAL_REFINES=1)
+    w = TournamentWitness()
+    pipeline.run(_png(), 1, w, FakeRenderer())
+    assert sorted(i for i in w.ids if pipeline.TOURNAMENT_IDS <= i < pipeline.FINAL_REFINE_ID) == list(range(910, 934))
+    assert len(w.ids) == 9 + 24 + 1
+
+
+class EffortWitness(TournamentWitness):
+    def create(self, *, request_id, reasoning, **kw):
+        self.efforts = getattr(self, "efforts", {})
+        self.efforts[request_id] = reasoning["effort"]
+        return super().create(request_id=request_id, reasoning=reasoning, **kw)
+
+
+def test_tournament_effort_follows_the_flag_and_doubles_the_cost_estimate(monkeypatch):
+    _pin(monkeypatch, TOURNAMENT_PICK=True, TOURNAMENT_EFFORT="medium", FINAL_REFINES=1)
+    w = EffortWitness()
+    pipeline.run(_png(), 1, w, FakeRenderer())
+    duel_efforts = {w.efforts[i] for i in w.efforts if pipeline.TOURNAMENT_IDS <= i < pipeline.FINAL_REFINE_ID}
+    assert duel_efforts == {"medium"}
+    assert w.efforts[100] == "medium" and w.efforts[950] == "high"  # generation and refinement efforts unchanged
+    assert pipeline._tournament_call_credits() == 2 * pipeline.TOURNAMENT_CALL_CREDITS
+    monkeypatch.setattr(config, "TOURNAMENT_EFFORT", "low")
+    assert pipeline._tournament_call_credits() == pipeline.TOURNAMENT_CALL_CREDITS
+
+
+class SizeRenderer(FakeRenderer):
+    def __init__(self):
+        super().__init__()
+        self.sizes = []
+
+    def render(self, source, options):
+        px = getattr(options, "img_size", None) or (options.get("img_size") if isinstance(options, dict) else None)
+        n = len(getattr(options, "thetas", None) or (options.get("thetas") if isinstance(options, dict) else [0]))
+        self.sizes.append((n, px))
+        return super().render(source, options)
+
+
+def test_sheet_px_sets_the_view_size_of_every_four_view_sheet(monkeypatch):
+    _pin(monkeypatch, SHEET_PX=768)
+    r = SizeRenderer()
+    pipeline.run(_png(), 1, FakeWitness(), r)
+    sheets = {px for n, px in r.sizes if n == 4}
+    assert 768 in sheets and 512 not in sheets  # the refinement sheets; the panel's front sheet keeps FRONT_PX

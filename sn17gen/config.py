@@ -71,3 +71,20 @@ SCORE_NARROW = 0
 # Proportion note: the object's measured width:height in the photo versus the module's near-frontal render,
 # appended to every final refinement when they differ by more than 15 percent (no model calls).
 PROPORTION_NOTE = False
+
+# Refinements inside every chain before the selection (base 2: generate, then refine the latest valid module
+# on its four-camera sheet twice). More chain refinements polish every candidate before the tournament picks one;
+# ids stay inside the chain's block (100 per chain).
+CHAIN_REFINES = 2
+
+# With four finalists, pick by a knockout bracket instead of a round-robin: two semifinals (chains 1-2, 3-4) and a
+# final, each a both-order duel on the judge's four single front views (3 duels, 24 calls, ids 910-933: the price of
+# the round-robin of three). With more than four chains the panel narrows them to four first.
+KNOCKOUT = False
+
+# Reasoning effort of the tournament judge (also the guard, the score narrowing and the critic): "low" is the
+# round-1 chain winner's choice; "medium" spends credits, not calls, on a steadier verdict.
+TOURNAMENT_EFFORT = "low"
+
+# Side of each camera view on the four-view sheets that every refinement sees (base 512, the sheet is 2x2 views).
+SHEET_PX = 512
