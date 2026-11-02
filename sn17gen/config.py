@@ -2,7 +2,7 @@
 
 # First final refinement walks the photo part by part (counts of repeated parts, the recognisable
 # structure) before changing anything; the second one is the plain four-view refinement.
-STRUCTURE_REFINE = False
+STRUCTURE_REFINE = True
 
 # Light-base metal shade table appended to the craft rules (the judge's white neutral render darkens
 # metals; "dark/black instead of silver" is its most frequent complaint).
@@ -27,7 +27,7 @@ DRAFT_HIGH = False
 
 # Number of independent generation chains ranked by the panel (base 3). More chains = more
 # candidates for the judge-style selection; ids stay below the panel block for up to 8 chains.
-CHAINS = 3
+CHAINS = 4
 
 # Model calls started at once inside one prompt (chains run in lockstep); keep at the witness
 # capture-slot count so battle runs never queue captures behind their own deadline.
@@ -35,12 +35,12 @@ PARALLEL_CALLS = 3
 
 # Number of final refinements of the picked module on the judge's four-camera sheet (base 2).
 # Rabbit's round-1 chain winner ran 3 and beat its own sibling with 2 by +0.117; ids 950 + k.
-FINAL_REFINES = 2
+FINAL_REFINES = 5
 
 # Round-1 chain winner's selection: instead of the Astra panel, every pair of finalists duels on the
 # judge's four single front views in both orders (Sol low, 8 calls per pair, penalties summed); with more
 # than three finalists the panel first narrows them to three (24 duel calls, ids 910-933).
-TOURNAMENT_PICK = False
+TOURNAMENT_PICK = True
 
 # Model that judges the tournament duels: None = the generation model (Sol, the chain winner's choice),
 # "gpt-6-astra" = the stronger vision model (our picker calibration: 40/40 on clear pairs).
@@ -80,7 +80,7 @@ CHAIN_REFINES = 2
 # With four finalists, pick by a knockout bracket instead of a round-robin: two semifinals (chains 1-2, 3-4) and a
 # final, each a both-order duel on the judge's four single front views (3 duels, 24 calls, ids 910-933: the price of
 # the round-robin of three). With more than four chains the panel narrows them to four first.
-KNOCKOUT = False
+KNOCKOUT = True
 
 # Reasoning effort of the tournament judge (also the guard, the score narrowing and the critic): "low" is the
 # round-1 chain winner's choice; "medium" spends credits, not calls, on a steadier verdict.
